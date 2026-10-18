@@ -2,10 +2,16 @@
 
 extern crate self as clapback;
 
+mod arg_value;
 mod command;
+mod display;
+mod env;
 
+pub use arg_value::{ArgValue, NamedArgSpec, push_delimited_os_str, push_flag_and_value};
 pub use clapback_derive::Command;
-pub use command::{Command, CommandError};
+pub use command::{Command, CommandError, CommandExt, CommandOutput, ToArgs};
+pub use display::{CommandDisplay, quote_os_str};
+pub use env::{AsOptionalPath, EnvValue, compute_augmented_path, ensure_user_profile_bin_paths};
 
 #[cfg(test)]
 mod tests {
@@ -24,6 +30,7 @@ mod tests {
         let cmd = GitCommand;
         expect_that!(cmd.program(), eq(OsStr::new("git")));
         expect_that!(cmd.args().is_empty(), is_true());
+        expect_that!(cmd.to_argv(), elements_are![eq(OsStr::new("git"))]);
     }
 
     #[googletest::test]
