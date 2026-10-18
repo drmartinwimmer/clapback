@@ -1,0 +1,22 @@
+[package]
+name = "clapback-derive"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88.0"
+license = "MIT"
+repository = "https://github.com/drmartinwimmer/clapback"
+description = "Derive macros for the clapback CLI command builder and runner"
+readme = "../../README.md"
+keywords = ["cli", "command", "process", "derive", "macros"]
+categories = ["command-line-interface", "development-tools"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "3.0", features = ["full", "extra-traits"] }
+
+[lints]
+workspace = true
