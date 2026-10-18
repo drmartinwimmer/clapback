@@ -141,6 +141,64 @@ impl<T: AsOptionalPath> AsOptionalPath for Option<T> {
     }
 }
 
+/// Converts a `#[command(program)]` field (`PathBuf`, `OsString`, `String`, `Option<PathBuf>`, etc.)
+/// into an [`OsStr`] binary reference, with an optional static fallback.
+pub trait AsProgramOsStr {
+    /// Returns the program [`OsStr`] to execute.
+    fn as_program_os_str(&self, default: Option<&'static str>) -> &OsStr;
+}
+
+impl AsProgramOsStr for PathBuf {
+    fn as_program_os_str(&self, _default: Option<&'static str>) -> &OsStr {
+        self.as_os_str()
+    }
+}
+
+impl AsProgramOsStr for Path {
+    fn as_program_os_str(&self, _default: Option<&'static str>) -> &OsStr {
+        self.as_os_str()
+    }
+}
+
+impl AsProgramOsStr for String {
+    fn as_program_os_str(&self, _default: Option<&'static str>) -> &OsStr {
+        OsStr::new(self.as_str())
+    }
+}
+
+impl AsProgramOsStr for str {
+    fn as_program_os_str(&self, _default: Option<&'static str>) -> &OsStr {
+        OsStr::new(self)
+    }
+}
+
+impl AsProgramOsStr for OsString {
+    fn as_program_os_str(&self, _default: Option<&'static str>) -> &OsStr {
+        self.as_os_str()
+    }
+}
+
+impl AsProgramOsStr for OsStr {
+    fn as_program_os_str(&self, _default: Option<&'static str>) -> &OsStr {
+        self
+    }
+}
+
+impl<T: AsProgramOsStr + ?Sized> AsProgramOsStr for &T {
+    fn as_program_os_str(&self, default: Option<&'static str>) -> &OsStr {
+        (**self).as_program_os_str(default)
+    }
+}
+
+impl<T: AsProgramOsStr> AsProgramOsStr for Option<T> {
+    fn as_program_os_str(&self, default: Option<&'static str>) -> &OsStr {
+        match self {
+            Some(val) => val.as_program_os_str(default),
+            None => default.map_or_else(|| OsStr::new(""), OsStr::new),
+        }
+    }
+}
+
 /// Mutable list of `PATH` entries that tracks whether any entries were added.
 #[derive(Debug)]
 struct PathList {
@@ -176,7 +234,6 @@ impl PathList {
             .flatten()
     }
 }
-
 /// Ensures common user binary directories (`~/.local/bin`, `~/.nix-profile/bin`,
 /// `/etc/profiles/per-user/$USER/bin`) are included in `cmd`'s `PATH`.
 pub fn ensure_user_profile_bin_paths(cmd: &mut ProcessCommand) {

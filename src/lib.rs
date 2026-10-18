@@ -8,22 +8,67 @@ mod display;
 mod env;
 
 pub use arg_value::{ArgValue, DelimitedBuffer, NamedArgSpec};
-pub use clapback_derive::Command;
+pub use clapback_derive::{Args, Command};
 pub use command::{Command, CommandError, CommandExt, CommandOutput, ToArgs};
 pub use display::{CommandDisplay, quote_os_str};
-pub use env::{AsOptionalPath, EnvValue, compute_augmented_path, ensure_user_profile_bin_paths};
+pub use env::{
+    AsOptionalPath, AsProgramOsStr, EnvValue, compute_augmented_path, ensure_user_profile_bin_paths,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use googletest::prelude::*;
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     #[derive(Command, Debug, Default, PartialEq, Eq)]
     #[command(program = "git")]
     struct GitCommand;
+
+    #[derive(Args, Debug, Clone, PartialEq, Eq)]
+    struct CommonFlags {
+        #[arg(long, require_equals = true)]
+        color: Option<String>,
+        #[arg(long, value_delimiter = ',')]
+        features: Vec<String>,
+    }
+
+    #[derive(Command, Debug, PartialEq, Eq)]
+    #[command(program = "fence", arg = "--strict", ensure_user_path)]
+    struct ConfiguredFenceCommand {
+        #[command(current_dir)]
+        #[env("TMPDIR")]
+        workspace_path: PathBuf,
+
+        #[arg(long)]
+        settings: Option<PathBuf>,
+
+        #[arg(long, false_long = "no-focus")]
+        focus: bool,
+
+        #[arg(short = 'T')]
+        template: Option<String>,
+
+        #[command(flatten)]
+        common: CommonFlags,
+
+        #[arg(last = true, trailing_var_arg = true)]
+        payload: Vec<String>,
+    }
+
+    #[derive(Command, Debug, PartialEq, Eq)]
+    struct RuntimeBinaryCommand {
+        #[command(program)]
+        binary: PathBuf,
+
+        #[command(args = ["pane", "run"])]
+        #[arg]
+        pane_id: String,
+
+        command_text: String,
+    }
 
     #[googletest::test]
     fn derive_command_sets_program_name() {
@@ -31,6 +76,87 @@ mod tests {
         expect_that!(cmd.program(), eq(OsStr::new("git")));
         expect_that!(cmd.args().is_empty(), is_true());
         expect_that!(cmd.to_argv(), elements_are![eq(OsStr::new("git"))]);
+    }
+
+    #[googletest::test]
+    fn derive_command_and_args_serialize_flags_envs_cwd_and_display() {
+        let cmd = ConfiguredFenceCommand {
+            workspace_path: PathBuf::from("/work/ws"),
+            settings: Some(PathBuf::from("/work/fence.jsonc")),
+            focus: false,
+            template: Some("name ++ \"\\n\"".to_string()),
+            common: CommonFlags {
+                color: Some("never".to_string()),
+                features: vec!["a".to_string(), "b".to_string()],
+            },
+            payload: vec![
+                "agy".to_string(),
+                "--dangerously-skip-permissions".to_string(),
+            ],
+        };
+
+        expect_that!(cmd.program(), eq(OsStr::new("fence")));
+        expect_that!(cmd.ensure_user_path(), is_true());
+        expect_that!(cmd.current_dir_path(), some(eq(Path::new("/work/ws"))));
+
+        let mut envs = Vec::new();
+        cmd.append_envs(&mut envs);
+        expect_that!(
+            &envs,
+            elements_are![(eq(OsStr::new("TMPDIR")), eq(OsStr::new("/work/ws")))]
+        );
+
+        let args = cmd.to_args();
+        expect_that!(
+            &args,
+            elements_are![
+                eq(OsStr::new("--strict")),
+                eq(OsStr::new("--settings")),
+                eq(OsStr::new("/work/fence.jsonc")),
+                eq(OsStr::new("--no-focus")),
+                eq(OsStr::new("-T")),
+                eq(OsStr::new("name ++ \"\\n\"")),
+                eq(OsStr::new("--color=never")),
+                eq(OsStr::new("--features")),
+                eq(OsStr::new("a,b")),
+                eq(OsStr::new("--")),
+                eq(OsStr::new("agy")),
+                eq(OsStr::new("--dangerously-skip-permissions")),
+            ]
+        );
+
+        expect_that!(
+            cmd.to_string(),
+            eq(
+                "fence --strict --settings /work/fence.jsonc --no-focus -T 'name ++ \"\\n\"' --color=never --features a,b -- agy --dangerously-skip-permissions"
+            )
+        );
+    }
+
+    #[googletest::test]
+    fn runtime_program_field_overrides_binary_and_prefixes_field_args() {
+        let cmd = RuntimeBinaryCommand {
+            binary: PathBuf::from("/custom/bin/herdr"),
+            pane_id: "w1:p55".to_string(),
+            command_text: "echo hi".to_string(),
+        };
+
+        expect_that!(cmd.program(), eq(OsStr::new("/custom/bin/herdr")));
+        let argv: Vec<OsString> = cmd.to_argv();
+        expect_that!(
+            &argv,
+            elements_are![
+                eq(OsStr::new("/custom/bin/herdr")),
+                eq(OsStr::new("pane")),
+                eq(OsStr::new("run")),
+                eq(OsStr::new("w1:p55")),
+                eq(OsStr::new("echo hi")),
+            ]
+        );
+        expect_that!(
+            cmd.to_string(),
+            eq("/custom/bin/herdr pane run w1:p55 'echo hi'")
+        );
     }
 
     #[googletest::test]
