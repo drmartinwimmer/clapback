@@ -12,7 +12,8 @@ pub(crate) fn expand_derive_command(input: &DeriveInput) -> syn::Result<TokenStr
     let program_body = build_program_body(input, &container, &parsed_fields)?;
     let current_dir_body = build_current_dir_body(input, &parsed_fields)?;
     let append_envs_body = build_append_envs_body(&parsed_fields);
-    let ensure_user_path = container.ensure_user_path;
+    let ensure_user_path_body =
+        build_ensure_user_path_body(container.ensure_user_path, &parsed_fields);
     let to_args_impl = build_to_args_impl(input, &container.prefix_args, &parsed_fields);
 
     let name = &input.ident;
@@ -40,7 +41,7 @@ pub(crate) fn expand_derive_command(input: &DeriveInput) -> syn::Result<TokenStr
             }
 
             fn ensure_user_path(&self) -> bool {
-                #ensure_user_path
+                #ensure_user_path_body
             }
         }
 
@@ -169,6 +170,18 @@ pub(crate) fn build_expr_to_args_stmt(
         FieldArgKind::Subcommand | FieldArgKind::Flatten => quote! {
             ::clapback::ToArgs::append_args(#value_expr, out);
         },
+        FieldArgKind::Wrap {
+            last,
+            is_option: false,
+        } => quote! {
+            ::clapback::append_wrapped_command(#value_expr, out, #last);
+        },
+        FieldArgKind::Wrap {
+            last,
+            is_option: true,
+        } => quote! {
+            ::clapback::append_optional_wrapped_command(#value_expr, out, #last);
+        },
     };
 
     quote! {
@@ -227,18 +240,62 @@ fn build_current_dir_body(
         ));
     }
 
+    let fallback = build_wrapped_current_dir_fallback(parsed_fields);
+
     if let Some(field) = cwd_fields.first() {
         let member = &field.member;
         Ok(quote! {
-            ::clapback::AsOptionalPath::as_optional_path(&self.#member)
+            ::clapback::AsOptionalPath::as_optional_path(&self.#member).or_else(|| #fallback)
         })
     } else {
-        Ok(quote!(::std::option::Option::None))
+        Ok(fallback)
     }
 }
 
+fn build_wrapped_current_dir_fallback(parsed_fields: &[ParsedField]) -> TokenStream {
+    let mut expr = quote!(::std::option::Option::None);
+    for field in parsed_fields.iter().rev() {
+        let member = &field.member;
+        match field.arg_kind {
+            FieldArgKind::Wrap {
+                is_option: false, ..
+            } => {
+                expr = quote! {
+                    ::clapback::Command::current_dir_path(&self.#member).or_else(|| #expr)
+                };
+            }
+            FieldArgKind::Wrap {
+                is_option: true, ..
+            } => {
+                expr = quote! {
+                    ::clapback::optional_wrapped_current_dir_path(&self.#member).or_else(|| #expr)
+                };
+            }
+            _ => {}
+        }
+    }
+    expr
+}
+
 fn build_append_envs_body(parsed_fields: &[ParsedField]) -> TokenStream {
-    let stmts = parsed_fields.iter().flat_map(|field| {
+    let wrap_stmts = parsed_fields.iter().filter_map(|field| {
+        let member = &field.member;
+        match field.arg_kind {
+            FieldArgKind::Wrap {
+                is_option: false, ..
+            } => Some(quote! {
+                ::clapback::Command::append_envs(&self.#member, out);
+            }),
+            FieldArgKind::Wrap {
+                is_option: true, ..
+            } => Some(quote! {
+                ::clapback::append_optional_wrapped_envs(&self.#member, out);
+            }),
+            _ => None,
+        }
+    });
+
+    let env_stmts = parsed_fields.iter().flat_map(|field| {
         let member = &field.member;
         field.env_vars.iter().map(move |var_name| {
             quote! {
@@ -250,6 +307,32 @@ fn build_append_envs_body(parsed_fields: &[ParsedField]) -> TokenStream {
     });
 
     quote! {
-        #(#stmts)*
+        #(#wrap_stmts)*
+        #(#env_stmts)*
     }
+}
+
+fn build_ensure_user_path_body(
+    container_ensure_user_path: bool,
+    parsed_fields: &[ParsedField],
+) -> TokenStream {
+    let mut expr = quote!(#container_ensure_user_path);
+    for field in parsed_fields {
+        let member = &field.member;
+        match field.arg_kind {
+            FieldArgKind::Wrap {
+                is_option: false, ..
+            } => {
+                expr = quote!(#expr || ::clapback::Command::ensure_user_path(&self.#member));
+            }
+            FieldArgKind::Wrap {
+                is_option: true, ..
+            } => {
+                expr =
+                    quote!(#expr || ::clapback::optional_wrapped_ensure_user_path(&self.#member));
+            }
+            _ => {}
+        }
+    }
+    expr
 }

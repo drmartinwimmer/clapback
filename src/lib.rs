@@ -4,12 +4,17 @@ extern crate self as clapback;
 
 mod arg_value;
 mod command;
+mod compose;
 mod display;
 mod env;
 
 pub use arg_value::{ArgValue, DelimitedBuffer, NamedArgSpec, ValueEnum};
 pub use clapback_derive::{Args, Command, Subcommand, ValueEnum};
 pub use command::{Command, CommandError, CommandExt, CommandOutput, ToArgs};
+pub use compose::{
+    EitherCommand, append_optional_wrapped_command, append_optional_wrapped_envs,
+    append_wrapped_command, optional_wrapped_current_dir_path, optional_wrapped_ensure_user_path,
+};
 pub use display::{CommandDisplay, quote_os_str};
 pub use env::{
     AsOptionalPath, AsProgramOsStr, EnvValue, compute_augmented_path, ensure_user_profile_bin_paths,
