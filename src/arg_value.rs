@@ -108,6 +108,12 @@ impl DelimitedBuffer {
     }
 }
 
+/// Trait implemented by unit enums that serialize as a single CLI argument token (`#[derive(ValueEnum)]`).
+pub trait ValueEnum {
+    /// Returns the CLI argument string representation of this enum variant.
+    fn as_arg_str(&self) -> &str;
+}
+
 /// Trait implemented by field types that can be serialized into CLI argument tokens.
 pub trait ArgValue {
     /// Appends positional argument token(s) for this value to `out`.

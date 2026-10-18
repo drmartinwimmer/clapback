@@ -7,8 +7,8 @@ mod command;
 mod display;
 mod env;
 
-pub use arg_value::{ArgValue, DelimitedBuffer, NamedArgSpec};
-pub use clapback_derive::{Args, Command};
+pub use arg_value::{ArgValue, DelimitedBuffer, NamedArgSpec, ValueEnum};
+pub use clapback_derive::{Args, Command, Subcommand, ValueEnum};
 pub use command::{Command, CommandError, CommandExt, CommandOutput, ToArgs};
 pub use display::{CommandDisplay, quote_os_str};
 pub use env::{
@@ -27,10 +27,18 @@ mod tests {
     #[command(program = "git")]
     struct GitCommand;
 
+    #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+    enum ColorWhen {
+        Auto,
+        Always,
+        #[value(name = "never")]
+        NeverEver,
+    }
+
     #[derive(Args, Debug, Clone, PartialEq, Eq)]
     struct CommonFlags {
         #[arg(long, require_equals = true)]
-        color: Option<String>,
+        color: Option<ColorWhen>,
         #[arg(long, value_delimiter = ',')]
         features: Vec<String>,
     }
@@ -70,6 +78,42 @@ mod tests {
         command_text: String,
     }
 
+    #[derive(Subcommand, Debug, PartialEq, Eq)]
+    enum JjWorkspaceAction {
+        Root {
+            #[arg(long)]
+            name: Option<String>,
+        },
+        List {
+            #[arg(short = 'T')]
+            template: Option<String>,
+        },
+        Add {
+            path: PathBuf,
+            #[arg(long)]
+            name: String,
+        },
+        Forget(String),
+    }
+
+    #[derive(Subcommand, Debug, PartialEq, Eq)]
+    enum JjSubcommand {
+        #[command(subcommand)]
+        Workspace(JjWorkspaceAction),
+        #[command(name = "st")]
+        Status,
+    }
+
+    #[derive(Command, Debug, PartialEq, Eq)]
+    #[command(program = "jj", arg = "--no-pager", ensure_user_path)]
+    struct JjCliCommand {
+        #[command(current_dir)]
+        current_dir: Option<PathBuf>,
+
+        #[command(subcommand)]
+        subcommand: JjSubcommand,
+    }
+
     #[googletest::test]
     fn derive_command_sets_program_name() {
         let cmd = GitCommand;
@@ -86,7 +130,7 @@ mod tests {
             focus: false,
             template: Some("name ++ \"\\n\"".to_string()),
             common: CommonFlags {
-                color: Some("never".to_string()),
+                color: Some(ColorWhen::NeverEver),
                 features: vec!["a".to_string(), "b".to_string()],
             },
             payload: vec![
@@ -157,6 +201,62 @@ mod tests {
             cmd.to_string(),
             eq("/custom/bin/herdr pane run w1:p55 'echo hi'")
         );
+    }
+
+    #[googletest::test]
+    fn nested_subcommands_and_value_enum_serialize_in_declaration_order() {
+        let add_cmd = JjCliCommand {
+            current_dir: Some(PathBuf::from("/repo")),
+            subcommand: JjSubcommand::Workspace(JjWorkspaceAction::Add {
+                path: PathBuf::from("/repo/.workspaces/feat"),
+                name: "feat".to_string(),
+            }),
+        };
+        expect_that!(
+            add_cmd.to_string(),
+            eq("jj --no-pager workspace add /repo/.workspaces/feat --name feat")
+        );
+
+        let forget_cmd = JjCliCommand {
+            current_dir: None,
+            subcommand: JjSubcommand::Workspace(JjWorkspaceAction::Forget("feat".to_string())),
+        };
+        expect_that!(
+            forget_cmd.to_string(),
+            eq("jj --no-pager workspace forget feat")
+        );
+
+        let root_cmd = JjCliCommand {
+            current_dir: None,
+            subcommand: JjSubcommand::Workspace(JjWorkspaceAction::Root {
+                name: Some("default".to_string()),
+            }),
+        };
+        expect_that!(
+            root_cmd.to_string(),
+            eq("jj --no-pager workspace root --name default")
+        );
+
+        let list_cmd = JjCliCommand {
+            current_dir: None,
+            subcommand: JjSubcommand::Workspace(JjWorkspaceAction::List {
+                template: Some("name ++ \"\\n\"".to_string()),
+            }),
+        };
+        expect_that!(
+            list_cmd.to_string(),
+            eq("jj --no-pager workspace list -T 'name ++ \"\\n\"'")
+        );
+
+        let status_cmd = JjCliCommand {
+            current_dir: None,
+            subcommand: JjSubcommand::Status,
+        };
+        expect_that!(status_cmd.to_string(), eq("jj --no-pager st"));
+
+        expect_that!(ColorWhen::Auto.as_arg_str(), eq("auto"));
+        expect_that!(ColorWhen::Always.to_string(), eq("always"));
+        expect_that!(ColorWhen::NeverEver.as_arg_str(), eq("never"));
     }
 
     #[googletest::test]
