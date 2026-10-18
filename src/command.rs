@@ -221,7 +221,7 @@ pub trait CommandExt: Command {
         let program_name = self.program().to_string_lossy().into_owned();
         let status = cmd
             .status()
-            .map_err(|err| map_spawn_error(err, &program_name))?;
+            .map_err(|err| CommandError::from_spawn_io(err, &program_name))?;
         if !status.success() {
             return Err(CommandError::ExecutionFailed {
                 program: program_name,
@@ -239,7 +239,7 @@ pub trait CommandExt: Command {
         let program_name = self.program().to_string_lossy().into_owned();
         let out = cmd
             .output()
-            .map_err(|err| map_spawn_error(err, &program_name))?;
+            .map_err(|err| CommandError::from_spawn_io(err, &program_name))?;
         Ok(CommandOutput::from(out))
     }
 
@@ -276,13 +276,16 @@ pub trait CommandExt: Command {
 
 impl<C: Command + ?Sized> CommandExt for C {}
 
-/// Maps an `std::io::Error` from process spawning into [`CommandError::ProgramNotFound`]
-/// or [`CommandError::Io`].
-fn map_spawn_error(err: std::io::Error, program_name: &str) -> CommandError {
-    if err.kind() == ErrorKind::NotFound {
-        CommandError::ProgramNotFound(program_name.to_string())
-    } else {
-        CommandError::Io(err)
+impl CommandError {
+    /// Maps an `std::io::Error` from process spawning into [`CommandError::ProgramNotFound`]
+    /// or [`CommandError::Io`].
+    #[must_use]
+    pub fn from_spawn_io(err: std::io::Error, program_name: &str) -> Self {
+        if err.kind() == ErrorKind::NotFound {
+            Self::ProgramNotFound(program_name.to_string())
+        } else {
+            Self::Io(err)
+        }
     }
 }
 

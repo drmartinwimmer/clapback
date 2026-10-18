@@ -141,6 +141,42 @@ impl<T: AsOptionalPath> AsOptionalPath for Option<T> {
     }
 }
 
+/// Mutable list of `PATH` entries that tracks whether any entries were added.
+#[derive(Debug)]
+struct PathList {
+    entries: Vec<PathBuf>,
+    updated: bool,
+}
+
+impl PathList {
+    fn from_os_str(path_var: &OsStr) -> Self {
+        Self {
+            entries: env::split_paths(path_var).collect(),
+            updated: false,
+        }
+    }
+
+    fn prepend_if_exists(&mut self, dir: PathBuf) {
+        if dir.exists() && !self.entries.contains(&dir) {
+            self.entries.insert(0, dir);
+            self.updated = true;
+        }
+    }
+
+    fn append_if_exists(&mut self, dir: PathBuf) {
+        if dir.exists() && !self.entries.contains(&dir) {
+            self.entries.push(dir);
+            self.updated = true;
+        }
+    }
+
+    fn into_joined(self) -> Option<OsString> {
+        self.updated
+            .then(|| env::join_paths(self.entries).ok())
+            .flatten()
+    }
+}
+
 /// Ensures common user binary directories (`~/.local/bin`, `~/.nix-profile/bin`,
 /// `/etc/profiles/per-user/$USER/bin`) are included in `cmd`'s `PATH`.
 pub fn ensure_user_profile_bin_paths(cmd: &mut ProcessCommand) {
@@ -162,36 +198,20 @@ pub fn compute_augmented_path(
     home: Option<&Path>,
     user: Option<&str>,
 ) -> Option<OsString> {
-    let path_var = current_path?;
-    let mut paths: Vec<PathBuf> = env::split_paths(path_var).collect();
-    let mut updated = false;
+    let mut path_list = PathList::from_os_str(current_path?);
 
     if let Some(home_dir) = home {
-        let local_bin = home_dir.join(".local/bin");
-        if local_bin.exists() && !paths.contains(&local_bin) {
-            paths.insert(0, local_bin);
-            updated = true;
-        }
-        let nix_bin = home_dir.join(".nix-profile/bin");
-        if nix_bin.exists() && !paths.contains(&nix_bin) {
-            paths.push(nix_bin);
-            updated = true;
-        }
+        path_list.prepend_if_exists(home_dir.join(".local/bin"));
+        path_list.append_if_exists(home_dir.join(".nix-profile/bin"));
     }
 
     if let Some(username) = user {
-        let user_bin = PathBuf::from(format!("/etc/profiles/per-user/{username}/bin"));
-        if user_bin.exists() && !paths.contains(&user_bin) {
-            paths.push(user_bin);
-            updated = true;
-        }
+        path_list.append_if_exists(PathBuf::from(format!(
+            "/etc/profiles/per-user/{username}/bin"
+        )));
     }
 
-    if updated {
-        env::join_paths(paths).ok()
-    } else {
-        None
-    }
+    path_list.into_joined()
 }
 
 #[cfg(test)]
@@ -199,14 +219,7 @@ mod tests {
     use super::*;
     use googletest::prelude::*;
     use std::fs;
-
-    struct TempDirGuard(PathBuf);
-
-    impl Drop for TempDirGuard {
-        fn drop(&mut self) {
-            drop(fs::remove_dir_all(&self.0));
-        }
-    }
+    use tempfile::tempdir;
 
     #[googletest::test]
     fn env_value_converts_standard_and_optional_types() {
@@ -239,16 +252,14 @@ mod tests {
     #[googletest::test]
     fn compute_augmented_path_prepends_local_bin_and_appends_nix_profile()
     -> Result<(), Box<dyn std::error::Error>> {
-        let temp_home =
-            env::temp_dir().join(format!("clapback_env_test_home_{}", std::process::id()));
-        let _guard = TempDirGuard(temp_home.clone());
-        let local_bin = temp_home.join(".local/bin");
-        let nix_bin = temp_home.join(".nix-profile/bin");
+        let temp_home = tempdir()?;
+        let local_bin = temp_home.path().join(".local/bin");
+        let nix_bin = temp_home.path().join(".nix-profile/bin");
         fs::create_dir_all(&local_bin)?;
         fs::create_dir_all(&nix_bin)?;
 
         let base_path = OsStr::new("/usr/bin:/bin");
-        let augmented = compute_augmented_path(Some(base_path), Some(&temp_home), None)
+        let augmented = compute_augmented_path(Some(base_path), Some(temp_home.path()), None)
             .ok_or("expected augmented path")?;
         let split: Vec<PathBuf> = env::split_paths(&augmented).collect();
 
@@ -260,14 +271,12 @@ mod tests {
     #[googletest::test]
     fn compute_augmented_path_returns_none_when_already_present()
     -> Result<(), Box<dyn std::error::Error>> {
-        let temp_home =
-            env::temp_dir().join(format!("clapback_env_existing_{}", std::process::id()));
-        let _guard = TempDirGuard(temp_home.clone());
-        let local_bin = temp_home.join(".local/bin");
+        let temp_home = tempdir()?;
+        let local_bin = temp_home.path().join(".local/bin");
         fs::create_dir_all(&local_bin)?;
 
         let existing = env::join_paths([local_bin.as_path(), Path::new("/usr/bin")])?;
-        let augmented = compute_augmented_path(Some(&existing), Some(&temp_home), None);
+        let augmented = compute_augmented_path(Some(&existing), Some(temp_home.path()), None);
         expect_that!(augmented, none());
         Ok(())
     }
