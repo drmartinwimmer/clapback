@@ -1,3 +1,4 @@
+use crate::compose::EitherCommand;
 use crate::display::CommandDisplay;
 use crate::env::ensure_user_profile_bin_paths;
 use std::borrow::Cow;
@@ -271,6 +272,33 @@ pub trait CommandExt: Command {
         let out = self.output()?;
         let parsed = serde_json::from_slice(&out.stdout)?;
         Ok(parsed)
+    }
+
+    /// Wraps `self` inside an outer command constructor `F: FnOnce(Self) -> W`.
+    #[must_use]
+    fn wrap_with<W: Command>(self, wrapper: impl FnOnce(Self) -> W) -> W
+    where
+        Self: Sized,
+    {
+        wrapper(self)
+    }
+
+    /// Conditionally wraps `self` when `condition` is `true`, returning an [`EitherCommand<W, Self>`]
+    /// that itself implements [`Command`].
+    #[must_use]
+    fn wrap_if<W: Command>(
+        self,
+        condition: bool,
+        wrapper: impl FnOnce(Self) -> W,
+    ) -> EitherCommand<W, Self>
+    where
+        Self: Sized,
+    {
+        if condition {
+            EitherCommand::Left(wrapper(self))
+        } else {
+            EitherCommand::Right(self)
+        }
     }
 }
 

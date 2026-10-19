@@ -4,7 +4,7 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{
     Attribute, Error, Expr, ExprArray, ExprLit, Field, Index, Lit, LitBool, LitChar, LitStr,
-    Member, Meta, Token,
+    Member, Meta, Token, Type, TypePath,
 };
 
 /// Parsed container-level `#[command(...)]` attributes.
@@ -74,6 +74,8 @@ pub(crate) enum FieldArgKind {
     Subcommand,
     /// Flattened argument struct (`#[command(flatten)]`).
     Flatten,
+    /// Wrapped inner command (`#[command(wrap)]` or `#[command(wrap, last = true)]`).
+    Wrap { last: bool, is_option: bool },
 }
 
 /// Parsed configuration for a single struct field.
@@ -114,12 +116,17 @@ impl ParsedField {
             }
         }
 
+        if let Some(cmd_last) = cmd_attrs.last {
+            raw_arg.last = cmd_last;
+        }
+
         let has_only_metadata =
             (cmd_attrs.is_program || cmd_attrs.is_current_dir || !raw_arg.env_vars.is_empty())
                 && !raw_arg.present
                 && cmd_attrs.delegate.is_none();
 
-        let arg_kind = raw_arg.resolve_kind(has_only_metadata, cmd_attrs.delegate);
+        let is_option = is_option_type(&field.ty);
+        let arg_kind = raw_arg.resolve_kind(has_only_metadata, cmd_attrs.delegate, is_option);
 
         Ok(Self {
             member,
@@ -132,11 +139,24 @@ impl ParsedField {
     }
 }
 
-/// Intermediate delegation mode from `#[command(subcommand | flatten)]`.
+fn is_option_type(ty: &Type) -> bool {
+    let Type::Path(TypePath {
+        qself: None, path, ..
+    }) = ty
+    else {
+        return false;
+    };
+    path.segments
+        .last()
+        .is_some_and(|seg| seg.ident == "Option")
+}
+
+/// Intermediate delegation mode from `#[command(subcommand | flatten | wrap)]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FieldCommandDelegate {
     Subcommand,
     Flatten,
+    Wrap,
 }
 
 /// Accumulator for `#[command(...)]` options on a struct field.
@@ -146,6 +166,7 @@ struct FieldCommandAttrs {
     is_current_dir: bool,
     prefix_args: Vec<String>,
     delegate: Option<FieldCommandDelegate>,
+    last: Option<bool>,
 }
 
 impl FieldCommandAttrs {
@@ -171,6 +192,14 @@ impl FieldCommandAttrs {
                 self.delegate = Some(FieldCommandDelegate::Flatten);
                 Ok(())
             }
+            Some("wrap") => {
+                self.delegate = Some(FieldCommandDelegate::Wrap);
+                Ok(())
+            }
+            Some("last") => {
+                self.last = Some(parse_optional_bool_value(meta)?);
+                Ok(())
+            }
             Some("arg") => {
                 let lit: LitStr = meta.value()?.parse()?;
                 self.prefix_args.push(lit.value());
@@ -181,7 +210,7 @@ impl FieldCommandAttrs {
                 Ok(())
             }
             _ => Err(meta.error(
-                "unsupported field #[command(...)] attribute; expected `program`, `current_dir`, `subcommand`, `flatten`, `arg`, or `args`",
+                "unsupported field #[command(...)] attribute; expected `program`, `current_dir`, `subcommand`, `flatten`, `wrap`, `last`, `arg`, or `args`",
             )),
         }
     }
@@ -260,11 +289,16 @@ impl RawArgOptions {
         &self,
         has_only_metadata: bool,
         delegate: Option<FieldCommandDelegate>,
+        is_option: bool,
     ) -> FieldArgKind {
         if let Some(del) = delegate {
             return match del {
                 FieldCommandDelegate::Subcommand => FieldArgKind::Subcommand,
                 FieldCommandDelegate::Flatten => FieldArgKind::Flatten,
+                FieldCommandDelegate::Wrap => FieldArgKind::Wrap {
+                    last: self.last,
+                    is_option,
+                },
             };
         }
 
