@@ -48,18 +48,63 @@ impl<'a> NamedArgSpec<'a> {
         self.value_delimiter = Some(delimiter);
         self
     }
+
+    /// Emits this flag and a single value into `out`, respecting `self.require_equals`.
+    pub fn push_flag_and_value(&self, out: &mut Vec<OsString>, value: OsString) {
+        if self.require_equals {
+            let mut combined = OsString::from(self.flag);
+            combined.push("=");
+            combined.push(value);
+            out.push(combined);
+        } else {
+            out.push(OsString::from(self.flag));
+            out.push(value);
+        }
+    }
 }
 
-/// Emits a flag and single value into `out`, respecting `spec.require_equals`.
-pub fn push_flag_and_value(out: &mut Vec<OsString>, spec: &NamedArgSpec<'_>, value: OsString) {
-    if spec.require_equals {
-        let mut combined = OsString::from(spec.flag);
-        combined.push("=");
-        combined.push(value);
-        out.push(combined);
-    } else {
-        out.push(OsString::from(spec.flag));
-        out.push(value);
+/// Accumulator for joining multiple [`ArgValue`] items with a character delimiter.
+#[derive(Debug, Clone)]
+pub struct DelimitedBuffer {
+    buf: OsString,
+    delimiter: char,
+    has_values: bool,
+}
+
+impl DelimitedBuffer {
+    /// Creates a new empty [`DelimitedBuffer`] separated by `delimiter`.
+    #[must_use]
+    pub fn new(delimiter: char) -> Self {
+        Self {
+            buf: OsString::new(),
+            delimiter,
+            has_values: false,
+        }
+    }
+
+    /// Appends a single raw [`OsStr`] token to the buffer, inserting the delimiter if non-empty.
+    pub fn push(&mut self, val: impl AsRef<OsStr>) {
+        if self.has_values {
+            let mut delim_buf = [0_u8; 4];
+            self.buf.push(self.delimiter.encode_utf8(&mut delim_buf));
+        }
+        self.has_values = true;
+        self.buf.push(val.as_ref());
+    }
+
+    /// Serializes `value`'s positional tokens into this delimiter-separated buffer.
+    pub fn append<V: ArgValue + ?Sized>(&mut self, value: &V) {
+        let mut tokens = Vec::new();
+        value.append_positional(&mut tokens);
+        for token in tokens {
+            self.push(&token);
+        }
+    }
+
+    /// Consumes the buffer and returns the joined [`OsString`] if at least one value was pushed.
+    #[must_use]
+    pub fn finish(self) -> Option<OsString> {
+        self.has_values.then_some(self.buf)
     }
 }
 
@@ -71,9 +116,6 @@ pub trait ArgValue {
     /// Appends named option or flag token(s) for this value to `out` according to `spec`.
     fn append_named(&self, out: &mut Vec<OsString>, spec: &NamedArgSpec<'_>);
 
-    /// Appends `self` to a delimiter-joined buffer for `value_delimiter`.
-    fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool);
-
     /// Appends `--` followed by positional tokens when this value produces at least one token.
     fn append_last(&self, out: &mut Vec<OsString>) {
         let mut temp = Vec::new();
@@ -83,21 +125,6 @@ pub trait ArgValue {
             out.extend(temp);
         }
     }
-}
-
-/// Helper to append a single `OsStr` token into a delimiter-separated `OsString` buffer.
-pub fn push_delimited_os_str(
-    buf: &mut OsString,
-    val: &OsStr,
-    delimiter: char,
-    is_first: &mut bool,
-) {
-    if !*is_first {
-        let mut delim_buf = [0_u8; 4];
-        buf.push(delimiter.encode_utf8(&mut delim_buf));
-    }
-    *is_first = false;
-    buf.push(val);
 }
 
 impl ArgValue for bool {
@@ -114,11 +141,6 @@ impl ArgValue for bool {
             out.push(OsString::from(false_flag));
         }
     }
-
-    fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool) {
-        let s = if *self { "true" } else { "false" };
-        push_delimited_os_str(buf, OsStr::new(s), delimiter, is_first);
-    }
 }
 
 impl ArgValue for String {
@@ -127,11 +149,7 @@ impl ArgValue for String {
     }
 
     fn append_named(&self, out: &mut Vec<OsString>, spec: &NamedArgSpec<'_>) {
-        push_flag_and_value(out, spec, OsString::from(self));
-    }
-
-    fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool) {
-        push_delimited_os_str(buf, OsStr::new(self), delimiter, is_first);
+        spec.push_flag_and_value(out, OsString::from(self));
     }
 }
 
@@ -141,11 +159,7 @@ impl ArgValue for str {
     }
 
     fn append_named(&self, out: &mut Vec<OsString>, spec: &NamedArgSpec<'_>) {
-        push_flag_and_value(out, spec, OsString::from(self));
-    }
-
-    fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool) {
-        push_delimited_os_str(buf, OsStr::new(self), delimiter, is_first);
+        spec.push_flag_and_value(out, OsString::from(self));
     }
 }
 
@@ -155,11 +169,7 @@ impl ArgValue for OsString {
     }
 
     fn append_named(&self, out: &mut Vec<OsString>, spec: &NamedArgSpec<'_>) {
-        push_flag_and_value(out, spec, self.clone());
-    }
-
-    fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool) {
-        push_delimited_os_str(buf, self.as_os_str(), delimiter, is_first);
+        spec.push_flag_and_value(out, self.clone());
     }
 }
 
@@ -169,11 +179,7 @@ impl ArgValue for OsStr {
     }
 
     fn append_named(&self, out: &mut Vec<OsString>, spec: &NamedArgSpec<'_>) {
-        push_flag_and_value(out, spec, self.to_os_string());
-    }
-
-    fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool) {
-        push_delimited_os_str(buf, self, delimiter, is_first);
+        spec.push_flag_and_value(out, self.to_os_string());
     }
 }
 
@@ -183,11 +189,7 @@ impl ArgValue for PathBuf {
     }
 
     fn append_named(&self, out: &mut Vec<OsString>, spec: &NamedArgSpec<'_>) {
-        push_flag_and_value(out, spec, self.as_os_str().to_os_string());
-    }
-
-    fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool) {
-        push_delimited_os_str(buf, self.as_os_str(), delimiter, is_first);
+        spec.push_flag_and_value(out, self.as_os_str().to_os_string());
     }
 }
 
@@ -197,11 +199,7 @@ impl ArgValue for Path {
     }
 
     fn append_named(&self, out: &mut Vec<OsString>, spec: &NamedArgSpec<'_>) {
-        push_flag_and_value(out, spec, self.as_os_str().to_os_string());
-    }
-
-    fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool) {
-        push_delimited_os_str(buf, self.as_os_str(), delimiter, is_first);
+        spec.push_flag_and_value(out, self.as_os_str().to_os_string());
     }
 }
 
@@ -213,10 +211,6 @@ impl ArgValue for Cow<'_, str> {
     fn append_named(&self, out: &mut Vec<OsString>, spec: &NamedArgSpec<'_>) {
         (**self).append_named(out, spec);
     }
-
-    fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool) {
-        (**self).append_joined(buf, delimiter, is_first);
-    }
 }
 
 impl ArgValue for Cow<'_, OsStr> {
@@ -227,10 +221,6 @@ impl ArgValue for Cow<'_, OsStr> {
     fn append_named(&self, out: &mut Vec<OsString>, spec: &NamedArgSpec<'_>) {
         (**self).append_named(out, spec);
     }
-
-    fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool) {
-        (**self).append_joined(buf, delimiter, is_first);
-    }
 }
 
 impl ArgValue for Cow<'_, Path> {
@@ -240,10 +230,6 @@ impl ArgValue for Cow<'_, Path> {
 
     fn append_named(&self, out: &mut Vec<OsString>, spec: &NamedArgSpec<'_>) {
         (**self).append_named(out, spec);
-    }
-
-    fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool) {
-        (**self).append_joined(buf, delimiter, is_first);
     }
 }
 
@@ -256,12 +242,7 @@ macro_rules! impl_arg_value_to_string {
                 }
 
                 fn append_named(&self, out: &mut Vec<OsString>, spec: &NamedArgSpec<'_>) {
-                    push_flag_and_value(out, spec, OsString::from(self.to_string()));
-                }
-
-                fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool) {
-                    let s = self.to_string();
-                    push_delimited_os_str(buf, OsStr::new(&s), delimiter, is_first);
+                    spec.push_flag_and_value(out, OsString::from(self.to_string()));
                 }
             }
         )*
@@ -281,10 +262,6 @@ impl<T: ArgValue + ?Sized> ArgValue for &T {
     fn append_named(&self, out: &mut Vec<OsString>, spec: &NamedArgSpec<'_>) {
         (**self).append_named(out, spec);
     }
-
-    fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool) {
-        (**self).append_joined(buf, delimiter, is_first);
-    }
 }
 
 impl<T: ArgValue + ?Sized> ArgValue for Box<T> {
@@ -294,10 +271,6 @@ impl<T: ArgValue + ?Sized> ArgValue for Box<T> {
 
     fn append_named(&self, out: &mut Vec<OsString>, spec: &NamedArgSpec<'_>) {
         (**self).append_named(out, spec);
-    }
-
-    fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool) {
-        (**self).append_joined(buf, delimiter, is_first);
     }
 }
 
@@ -311,12 +284,6 @@ impl<T: ArgValue> ArgValue for Option<T> {
     fn append_named(&self, out: &mut Vec<OsString>, spec: &NamedArgSpec<'_>) {
         if let Some(val) = self {
             val.append_named(out, spec);
-        }
-    }
-
-    fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool) {
-        if let Some(val) = self {
-            val.append_joined(buf, delimiter, is_first);
         }
     }
 }
@@ -333,24 +300,17 @@ impl<T: ArgValue> ArgValue for [T] {
             return;
         }
         if let Some(delimiter) = spec.value_delimiter {
-            let mut joined = OsString::new();
-            let mut is_first = true;
+            let mut joined = DelimitedBuffer::new(delimiter);
             for item in self {
-                item.append_joined(&mut joined, delimiter, &mut is_first);
+                joined.append(item);
             }
-            if !is_first {
-                push_flag_and_value(out, spec, joined);
+            if let Some(combined) = joined.finish() {
+                spec.push_flag_and_value(out, combined);
             }
         } else {
             for item in self {
                 item.append_named(out, spec);
             }
-        }
-    }
-
-    fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool) {
-        for item in self {
-            item.append_joined(buf, delimiter, is_first);
         }
     }
 }
@@ -363,10 +323,6 @@ impl<T: ArgValue> ArgValue for Vec<T> {
     fn append_named(&self, out: &mut Vec<OsString>, spec: &NamedArgSpec<'_>) {
         self.as_slice().append_named(out, spec);
     }
-
-    fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool) {
-        self.as_slice().append_joined(buf, delimiter, is_first);
-    }
 }
 
 impl<T: ArgValue, const N: usize> ArgValue for [T; N] {
@@ -376,10 +332,6 @@ impl<T: ArgValue, const N: usize> ArgValue for [T; N] {
 
     fn append_named(&self, out: &mut Vec<OsString>, spec: &NamedArgSpec<'_>) {
         self.as_slice().append_named(out, spec);
-    }
-
-    fn append_joined(&self, buf: &mut OsString, delimiter: char, is_first: &mut bool) {
-        self.as_slice().append_joined(buf, delimiter, is_first);
     }
 }
 

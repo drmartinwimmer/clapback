@@ -7,7 +7,7 @@ mod command;
 mod display;
 mod env;
 
-pub use arg_value::{ArgValue, NamedArgSpec, push_delimited_os_str, push_flag_and_value};
+pub use arg_value::{ArgValue, DelimitedBuffer, NamedArgSpec};
 pub use clapback_derive::Command;
 pub use command::{Command, CommandError, CommandExt, CommandOutput, ToArgs};
 pub use display::{CommandDisplay, quote_os_str};
